@@ -164,6 +164,164 @@ tensor forwardPass(const tensor &weights, const tensor &biases, const tensor &in
     return output;
 }
 
+tensor attention(
+    const tensor &embeddings, int numTokens, int embedDim, int headDim,
+    const tensor &qWeights, const tensor &kWeights, const tensor &vWeights,
+    const tensor &qBiases, const tensor &kBiases, const tensor &vBiases
+) {
+    // project embeddings into Q, K, V
+    tensor qProj = matMul(embeddings, qWeights, numTokens, embedDim, headDim);
+    tensor kProj = matMul(embeddings, kWeights, numTokens, embedDim, headDim);
+    tensor vProj = matMul(embeddings, vWeights, numTokens, embedDim, headDim);
+
+    // add biases
+    for(int i = 0; i < numTokens; i++){
+        for(int j = 0; j < headDim; j++){
+            qProj[i * headDim + j] += qBiases[j];
+            kProj[i * headDim + j] += kBiases[j];
+            vProj[i * headDim + j] += vBiases[j];
+        }
+    }
+
+    // attention scores: Q * K^T / sqrt(headDim)
+    tensor kTranspose = transpose(kProj, numTokens, headDim);
+    tensor scores = matMul(qProj, kTranspose, numTokens, headDim, numTokens);
+
+    float scale = 1.0f / sqrt(headDim);
+    for(int i = 0; i < numTokens * numTokens; i++){
+        scores[i] *= scale;
+    }
+
+    // softmax over each row
+    tensor attnWeights(numTokens * numTokens);
+    for(int i = 0; i < numTokens; i++){
+        tensor row(scores.begin() + i * numTokens, scores.begin() + (i + 1) * numTokens);
+        tensor softmaxRow = softmax(row);
+        for(int j = 0; j < numTokens; j++){
+            attnWeights[i * numTokens + j] = softmaxRow[j];
+        }
+    }
+
+    // weighted sum: attn * V
+    tensor output = matMul(attnWeights, vProj, numTokens, numTokens, headDim);
+    return output;
+}
+
+tensor multiHeadAttention(
+    const tensor &embeddings, int numTokens,
+    const TransformerInput &layer
+) {
+    const int N_HEAD = 12;
+    const int EMBD = 768;
+    const int HEAD_DIM = EMBD / N_HEAD;
+
+    // run each head
+    tensor allHeads;
+    for(int h = 0; h < N_HEAD; h++) {
+        // slice Q, K, V weights for this head: [EMBD, HEAD_DIM]
+        tensor qh_w, kh_w, vh_w;
+        for(int i = 0; i < EMBD; i++){
+            for(int j = 0; j < HEAD_DIM; j++){
+                qh_w.push_back(layer.q_weights[i * EMBD + h * HEAD_DIM + j]);
+                kh_w.push_back(layer.k_weights[i * EMBD + h * HEAD_DIM + j]);
+                vh_w.push_back(layer.v_weights[i * EMBD + h * HEAD_DIM + j]);
+            }
+        }
+
+        // slice Q, K, V biases for this head: [HEAD_DIM]
+        tensor qh_b(layer.q_biases.begin() + h * HEAD_DIM, layer.q_biases.begin() + (h + 1) * HEAD_DIM);
+        tensor kh_b(layer.k_biases.begin() + h * HEAD_DIM, layer.k_biases.begin() + (h + 1) * HEAD_DIM);
+        tensor vh_b(layer.v_biases.begin() + h * HEAD_DIM, layer.v_biases.begin() + (h + 1) * HEAD_DIM);
+
+        // single head attention
+        tensor headOut = attention(embeddings, numTokens, EMBD, HEAD_DIM,
+                                   qh_w, kh_w, vh_w, qh_b, kh_b, vh_b);
+
+        // append to allHeads
+        allHeads.insert(allHeads.end(), headOut.begin(), headOut.end());
+    }
+
+    // project concatenated heads through output projection
+    tensor output = matMul(allHeads, layer.q_weights, numTokens, EMBD, EMBD);
+    return output;
+}
+
+tensor mlp(const tensor &input, int numTokens, int dimensions, const TransformerInput &layer) {
+    const int HIDDEN = 3072;
+
+    tensor result(numTokens * dimensions);
+    for(int i = 0; i < numTokens; i++) {
+        // extract this token's embedding
+        tensor tokenEmb(input.begin() + i * dimensions, input.begin() + (i + 1) * dimensions);
+
+        // up projection: [dimensions] x [dimensions, HIDDEN] -> [HIDDEN], then gelu
+        tensor hiddenOut = forwardPass(layer.l1_weights, layer.l1_biases, tokenEmb, true);
+
+        // down projection: [HIDDEN] x [HIDDEN, dimensions] -> [dimensions]
+        tensor out = forwardPass(layer.l2_weights, layer.l2_biases, hiddenOut, false);
+
+        // store result
+        for(int j = 0; j < dimensions; j++){
+            result[i * dimensions + j] = out[j];
+        }
+    }
+    return result;
+}
+
+tensor transformer(TransformerInput input, int numTokens, const tensor &embeddings) {
+    const int EMBD = 768;
+
+    // layer norm before attention
+    tensor layerNormEmbeddings(numTokens * EMBD);
+    for(int i = 0; i < numTokens; i++){
+        tensor tokenEmbedding(embeddings.begin() + i * EMBD, embeddings.begin() + (i + 1) * EMBD);
+        auto normed = layerNorm(tokenEmbedding, input.lnAttention_weights, input.lnAttenion_biases);
+        for(int j = 0; j < EMBD; j++){
+            layerNormEmbeddings[i * EMBD + j] = normed[j];
+        }
+    }
+
+    // multi-head attention
+    auto attentionResult = multiHeadAttention(layerNormEmbeddings, numTokens, input);
+
+    // residual connection
+    tensor residual(numTokens * EMBD);
+    for(int i = 0; i < numTokens; i++){
+        tensor embed(embeddings.begin() + i * EMBD, embeddings.begin() + (i + 1) * EMBD);
+        tensor attn(attentionResult.begin() + i * EMBD, attentionResult.begin() + (i + 1) * EMBD);
+        auto withResidual = addVectors(embed, attn);
+        for(int j = 0; j < EMBD; j++){
+            residual[i * EMBD + j] = withResidual[j];
+        }
+    }
+
+    // layer norm before MLP
+    tensor normedMLP(numTokens * EMBD);
+    for(int i = 0; i < numTokens; i++){
+        tensor tokenRes(residual.begin() + i * EMBD, residual.begin() + (i + 1) * EMBD);
+        auto normed = layerNorm(tokenRes, input.lnMlp_weights, input.lnMlp_biases);
+        for(int j = 0; j < EMBD; j++){
+            normedMLP[i * EMBD + j] = normed[j];
+        }
+    }
+
+    // MLP
+    auto mlpResult = mlp(normedMLP, numTokens, EMBD, input);
+
+    // residual connection after MLP
+    tensor output(numTokens * EMBD);
+    for(int i = 0; i < numTokens; i++){
+        tensor res(residual.begin() + i * EMBD, residual.begin() + (i + 1) * EMBD);
+        tensor mlp(mlpResult.begin() + i * EMBD, mlpResult.begin() + (i + 1) * EMBD);
+        auto withResidual = addVectors(res, mlp);
+        for(int j = 0; j < EMBD; j++){
+            output[i * EMBD + j] = withResidual[j];
+        }
+    }
+
+    return output;
+}
+
 void parseMerges() {
 
 }
