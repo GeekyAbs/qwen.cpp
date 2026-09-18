@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <iterator>
 #include <vector>
 #include <cmath>
@@ -123,6 +124,43 @@ tensor layerNorm(const tensor &embeddings, const tensor &weights, const tensor &
         float normalizedVal = (embeddings[i] - mean) / modifiedSD;
         output[i] = normalizedVal * weights[i] + biases[i];
     }
+    return output;
+}
+
+tensor softmax(const tensor &input){
+    int n = input.size();
+    float mx = *std::max_element(input.begin(), input.end());
+
+    tensor result(n);
+    float sum = 0.0f;
+    for(int i = 0; i < n; i++){
+        result[i] = exp(input[i] - mx);
+        sum += result[i];
+    }
+    for(int i = 0; i < n; i++){
+        result[i] /= sum;
+    }
+    return result;
+}
+
+float gelu(float x);
+
+tensor forwardPass(const tensor &weights, const tensor &biases, const tensor &inputs, bool use_gelu = false) {
+    int countNeurons = biases.size();
+    tensor output(biases.begin(), biases.end());
+
+    for(int i = 0; i < countNeurons; i++){
+        for(int j = 0; j < inputs.size(); j++){
+            output[i] += weights[i * inputs.size() + j] * inputs[j];
+        }
+    }
+
+    if(use_gelu){
+        for(int i = 0; i < countNeurons; i++){
+            output[i] = gelu(output[i]);
+        }
+    }
+
     return output;
 }
 
