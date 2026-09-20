@@ -22,7 +22,7 @@ const int N_LAYERS = 12;
 const int N_CTX = 1024;
 const int N_VOCAB = 50257;
 
-std::string weightsDir = "../weights/";
+std::string weightsDir = "../weights/gpt2/";
 
 struct TransformerInput {
     // attention qkv w & b
