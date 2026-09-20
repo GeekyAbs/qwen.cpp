@@ -1,2 +1,11 @@
 weights/
+
+# build output
 inference/gpt2
+inference/qwen
+
+# python
+.venv/
+__pycache__/
+*.py[oc]
+*.egg-info
