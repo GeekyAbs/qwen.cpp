@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 #include "include/json.hpp"
+#include<cmath>
 
 using tensor = std::vector<float>;
 
@@ -77,11 +78,31 @@ struct QwenWeights {
 
 QwenWeights loadWeights();
 
-// math
-tensor matMul(const tensor &a, const tensor &b, int n, int m, int p);
-tensor addVectors(const tensor &a, const tensor &b);
+// a is [n, m], b is [m, p]
+tensor matMul(const tensor &a, const tensor &b, int n, int m, int p){
+    tensor result(n * p, 0.0f);
+    for (int i = 0; i < n; i++) {
+        for (int k = 0; k < m; k++) {
+            float av = a[i * m + k];
+            if (av == 0.0f) continue;
+            for (int j = 0; j < p; j++) {
+                result[i * p + j] += av * b[k * p + j];
+            }
+        }
+    }
+    return result;
+}
+tensor addVectors(const tensor &a, const tensor &b){
+    tensor sum(a.size());
+    for (size_t i = 0; i < a.size(); i++) {
+        sum[i] = a[i] + b[i];
+    }
+    return sum;
+}
 tensor softmax(const tensor &input);
-float silu(float x);
+float silu(float x) {
+    return x / (1.0f + expf(-x));
+}
 
 // no mean subtraction and no bias, unlike gpt2's layer norm
 tensor rmsNorm(const tensor &input, const tensor &weights, float eps);
