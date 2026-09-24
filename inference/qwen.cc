@@ -114,8 +114,21 @@ void rope(tensor &q, tensor &k, int position, int headDim, float theta);
 tensor groupedQueryAttention(const tensor &embeddings, int numTokens, const QwenLayer &layer,
                              const Config &cfg);
 
-// silu(gate(x)) * up(x), then down
-tensor swiglu(const tensor &input, int numTokens, const QwenLayer &layer, const Config &cfg);
+// silu(gate(x)) * up(x), then down. no biases anywhere in qwen's mlp.
+// weights are expected [in, out], so transpose them when loading.
+tensor swiglu(const tensor &input, int numTokens, const QwenLayer &layer, const Config &cfg) {
+    const int H = cfg.hiddenSize, I = cfg.intermediateSize;
+
+    tensor gate = matMul(input, layer.gate_weights, numTokens, H, I);
+    tensor up   = matMul(input, layer.up_weights,   numTokens, H, I);
+
+    // silu on the gate, then multiply the two elementwise
+    for (int i = 0; i < numTokens * I; i++) {
+        gate[i] = silu(gate[i]) * up[i];
+    }
+
+    return matMul(gate, layer.down_weights, numTokens, I, H);
+}
 
 tensor transformer(const QwenLayer &layer, int numTokens, const tensor &embeddings,
                    const Config &cfg);
